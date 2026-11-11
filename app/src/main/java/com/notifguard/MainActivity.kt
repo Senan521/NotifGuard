@@ -10,6 +10,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,7 +49,13 @@ fun AppTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = scheme, content = content)
 }
 
-data class Found(val pkg: String, val app: String, val uid: Int, val ch: Ch, val on: Boolean = true)
+data class Found(
+    val pkg: String,
+    val app: String,
+    val uid: Int,
+    val ch: Ch,
+    val on: Boolean = false
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,6 +70,9 @@ fun Screen() {
     var allowT by remember { mutableStateOf(Rules.allow(ctx)) }
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf("") }
+    var showSystem by remember { mutableStateOf(false) }
+    var search by remember { mutableStateOf("") }
+    var listMode by remember { mutableIntStateOf(0) } // 0=tümü, 1=şüpheli, 2=açık, 3=kapalı
     val found = remember { mutableStateListOf<Found>() }
 
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
@@ -133,7 +144,36 @@ fun Screen() {
                     }
                 }
             }
-            // 4) Tarama
+            // 4) Gelişmiş kanal taraması
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Kanal tarama seçenekleri", style = MaterialTheme.typography.titleLarge)
+                        Text("Kelime eşleşmesi olmayan kanallar da dahil tüm kanallar listelenir.")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Sistem uygulamalarını dahil et", Modifier.weight(1f))
+                            Switch(checked = showSystem, onCheckedChange = { showSystem = it })
+                        }
+                        OutlinedTextField(
+                            value = search,
+                            onValueChange = { search = it },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text("Uygulama, paket veya kanal ara") }
+                        )
+                    }
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("Tümü", "Şüpheli", "Açık", "Kapalı").forEachIndexed { i, label ->
+                        FilterChip(
+                            selected = listMode == i,
+                            onClick = { listMode = i },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+            }
+            // 5) Tarama
             item {
                 Button(
                     onClick = {
@@ -149,17 +189,30 @@ fun Screen() {
                                 }
                             } else {
                                 val apps = withContext(Dispatchers.IO) {
-                                    ctx.packageManager.getInstalledApplications(0).filter {
-                                        it.flags and ApplicationInfo.FLAG_SYSTEM == 0 && it.packageName != ctx.packageName
+                                    ctx.packageManager.getInstalledApplications(0).filter { ai ->
+                                        ai.packageName != ctx.packageName &&
+                                            (showSystem || ai.flags and ApplicationInfo.FLAG_SYSTEM == 0)
                                     }
                                 }
+                                var scanned = 0
+                                var failed = 0
                                 for (ai in apps) {
-                                    val label = ctx.packageManager.getApplicationLabel(ai).toString()
-                                    be.channels(ai.packageName, ai.uid)
-                                        .filter { it.importance != 0 && Rules.isJunk(ctx, it.id + " " + it.name) }
-                                        .forEach { found.add(Found(ai.packageName, label, ai.uid, it)) }
+                                    val label = runCatching { ctx.packageManager.getApplicationLabel(ai).toString() }
+                                        .getOrDefault(ai.packageName)
+                                    val channels = runCatching { be.channels(ai.packageName, ai.uid) }
+                                        .onFailure { failed++ }
+                                        .getOrDefault(emptyList())
+                                    scanned += channels.size
+                                    channels.forEach { ch ->
+                                        found.add(Found(ai.packageName, label, ai.uid, ch, on = false))
+                                    }
                                 }
-                                msg = "${found.size} gereksiz kanal bulundu"
+                                msg = if (scanned == 0) {
+                                    "Kanal bulunamadı. Uygulamanın en az bir bildirim kanalı oluşturduğundan emin ol ve tekrar tara."
+                                } else {
+                                    "$scanned kanal listelendi" +
+                                        if (failed > 0) " · $failed uygulama taranamadı" else ""
+                                }
                             }
                             busy = false
                         }
@@ -171,30 +224,69 @@ fun Screen() {
             if (busy) item { Box(Modifier.fillMaxWidth(), Alignment.Center) { CircularProgressIndicator() } }
             if (msg.isNotEmpty()) item { Text(msg, style = MaterialTheme.typography.bodyLarge) }
 
-            items(found.toList(), key = { it.pkg + "/" + it.ch.id }) { f ->
+            items(
+                found.filter { f ->
+                    val q = Rules.norm(search.trim())
+                    val matchesSearch = q.isBlank() || Rules.norm(f.app + " " + f.pkg + " " + f.ch.id + " " + f.ch.name).contains(q)
+                    val matchesMode = when (listMode) {
+                        1 -> Rules.isJunk(ctx, f.ch.id + " " + f.ch.name)
+                        2 -> f.ch.importance != 0
+                        3 -> f.ch.importance == 0
+                        else -> true
+                    }
+                    matchesSearch && matchesMode
+                },
+                key = { it.pkg + "/" + it.ch.id }
+            ) { f ->
+                val suspicious = Rules.isJunk(ctx, f.ch.id + " " + f.ch.name)
                 Card(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(checked = f.on, onCheckedChange = { v ->
-                            val i = found.indexOfFirst { it.pkg == f.pkg && it.ch.id == f.ch.id }
-                            if (i >= 0) found[i] = f.copy(on = v)
-                        })
-                        Column {
+                        Checkbox(
+                            checked = f.on,
+                            onCheckedChange = { v ->
+                                val i = found.indexOfFirst { it.pkg == f.pkg && it.ch.id == f.ch.id }
+                                if (i >= 0) found[i] = f.copy(on = v)
+                            },
+                            enabled = f.ch.importance != 0
+                        )
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(f.app, style = MaterialTheme.typography.titleMedium)
                             Text(f.ch.name.ifBlank { f.ch.id }, style = MaterialTheme.typography.bodyMedium)
+                            Text("${f.pkg} · ${f.ch.id}", style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                if (suspicious) AssistChip(onClick = {}, label = { Text("Şüpheli eşleşme") })
+                                AssistChip(onClick = {}, label = {
+                                    Text(if (f.ch.importance == 0) "Kapalı" else "Açık")
+                                })
+                            }
                         }
                     }
                 }
             }
+            if (found.isNotEmpty() && found.none { f ->
+                    val q = Rules.norm(search.trim())
+                    (q.isBlank() || Rules.norm(f.app + " " + f.pkg + " " + f.ch.id + " " + f.ch.name).contains(q)) &&
+                        when (listMode) {
+                            1 -> Rules.isJunk(ctx, f.ch.id + " " + f.ch.name)
+                            2 -> f.ch.importance != 0
+                            3 -> f.ch.importance == 0
+                            else -> true
+                        }
+                }) item { Text("Bu filtreyle eşleşen kanal yok.") }
             if (found.isNotEmpty()) item {
                 Button(
                     onClick = {
                         scope.launch {
                             busy = true
                             val be = Backends.get(ctx, mode)
-                            val sel = found.filter { it.on }
+                            val sel = found.filter { it.on && it.ch.importance != 0 }
                             val done = mutableListOf<Found>()
                             if (be != null) for (f in sel) if (be.block(f.pkg, f.uid, f.ch.id)) done.add(f)
-                            found.removeAll { d -> done.any { it.pkg == d.pkg && it.ch.id == d.ch.id } }
+                            done.forEach { d ->
+                                val i = found.indexOfFirst { it.pkg == d.pkg && it.ch.id == d.ch.id }
+                                if (i >= 0) found[i] = d.copy(ch = d.ch.copy(importance = 0), on = false)
+                            }
                             msg = "${done.size}/${sel.size} kanal kapatıldı" +
                                 if (done.size < sel.size) " (bazıları reddedildi; bu Android sürümünde Root dene)" else ""
                             busy = false
@@ -202,7 +294,7 @@ fun Screen() {
                     },
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth()
-                ) { Text("Seçilenleri kapat") }
+                ) { Text("Seçilen açık kanalları kapat") }
             }
         }
     }

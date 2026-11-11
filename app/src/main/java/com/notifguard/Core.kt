@@ -44,11 +44,17 @@ object Rules {
 
     private fun words(s: String) = s.split(",").map { norm(it.trim()) }.filter { it.isNotEmpty() }
 
+    /** Engelleme kelimesi eşleşmesi; kanal taramasında öneri üretmek için kullanılır. */
+    fun matchesBlock(c: Context, text: String): Boolean {
+        val n = norm(text)
+        return words(block(c)).any { n.contains(it) }
+    }
+
     /** İzin listesi her zaman kazanır. */
     fun isJunk(c: Context, text: String): Boolean {
         val n = norm(text)
         if (words(allow(c)).any { n.contains(it) }) return false
-        return words(block(c)).any { n.contains(it) }
+        return matchesBlock(c, text)
     }
 }
 
