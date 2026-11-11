@@ -35,7 +35,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
     val ctx = LocalContext.current
@@ -45,12 +44,12 @@ fun AppTheme(content: @Composable () -> Unit) {
         dark -> darkColorScheme()
         else -> lightColorScheme()
     }
-    MaterialExpressiveTheme(colorScheme = scheme, motionScheme = MotionScheme.expressive(), content = content)
+    MaterialTheme(colorScheme = scheme, content = content)
 }
 
 data class Found(val pkg: String, val app: String, val uid: Int, val ch: Ch, val on: Boolean = true)
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun Screen() {
     val ctx = LocalContext.current
@@ -169,7 +168,7 @@ fun Screen() {
                     modifier = Modifier.fillMaxWidth()
                 ) { Text("Uygulamaları tara") }
             }
-            if (busy) item { Box(Modifier.fillMaxWidth(), Alignment.Center) { LoadingIndicator() } }
+            if (busy) item { Box(Modifier.fillMaxWidth(), Alignment.Center) { CircularProgressIndicator() } }
             if (msg.isNotEmpty()) item { Text(msg, style = MaterialTheme.typography.bodyLarge) }
 
             items(found.toList(), key = { it.pkg + "/" + it.ch.id }) { f ->
